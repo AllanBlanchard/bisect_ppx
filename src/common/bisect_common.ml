@@ -21,29 +21,36 @@ let coverage_file_identifier = "BISECT-COVERAGE-4"
 
 (* Output functions for the [bisect*.coverage] file format. *)
 
-let write_int formatter i =
-  Format.fprintf formatter " %i" i
+let write_int buffer i =
+  Buffer.add_char buffer ' ';
+  Buffer.add_string buffer (string_of_int i)
 
-let write_string formatter s =
-  Format.fprintf formatter " %i %s" (String.length s) s
+let write_string buffer s =
+  Buffer.add_char buffer ' ';
+  Buffer.add_string buffer (string_of_int (String.length s));
+  Buffer.add_char buffer ' ';
+  Buffer.add_string buffer s
 
-let write_array write_element formatter a =
-  Format.fprintf formatter " %i" (Array.length a);
-  Array.iter (write_element formatter) a
+let write_array write_element buffer a =
+  Buffer.add_char buffer ' ';
+  Buffer.add_string buffer (string_of_int (Array.length a));
+  Array.iter (write_element buffer) a
 
-let write_list write_element formatter l =
-  Format.fprintf formatter " %i" (List.length l);
-  List.iter (write_element formatter) l
+let write_list write_element buffer l =
+  Buffer.add_char buffer ' ';
+  Buffer.add_string buffer (string_of_int (List.length l));
+  List.iter (write_element buffer) l
 
-let write_instrumented_file formatter {filename; points; counts} =
-  write_string formatter filename;
-  write_array write_int formatter points;
-  write_array write_int formatter counts
+let write_instrumented_file buffer {filename; points; counts} =
+  write_string buffer filename;
+  write_array write_int buffer points;
+  write_array write_int buffer counts
 
-let write_coverage formatter coverage =
-  Format.fprintf formatter "%s" coverage_file_identifier;
-  write_list write_instrumented_file formatter coverage;
-  Format.pp_print_flush formatter ()
+let write_coverage coverage =
+  let buffer = Buffer.create 4096 in
+  Buffer.add_string buffer coverage_file_identifier;
+  write_list write_instrumented_file buffer coverage;
+  Buffer.contents buffer
 
 
 
@@ -55,6 +62,12 @@ let coverage : coverage Lazy.t =
   lazy (Hashtbl.create 17)
 
 let register_file ~filename ~points =
+  let filename =
+    if Filename.check_suffix filename ".re.ml" then
+      Filename.chop_suffix filename ".ml"
+    else
+      filename
+  in
   let counts = Array.make (Array.length points) 0 in
   let coverage = Lazy.force coverage in
   if not (Hashtbl.mem coverage filename) then
@@ -64,42 +77,37 @@ let register_file ~filename ~points =
     if current_count < max_int then
       counts.(index) <- current_count + 1)
 
-let flatten_coverage coverage =
-  Hashtbl.fold (fun _ file acc -> file::acc) coverage []
 
-let flatten_data () =
-  flatten_coverage (Lazy.force coverage)
 
 let reset_counters () =
-  Lazy.force coverage
-  |> Hashtbl.iter begin fun _ {counts; _} ->
+  Hashtbl.iter begin fun _ {counts; _} ->
     match Array.length counts with
     | 0 -> ()
     | n -> Array.fill counts 0 (n - 1) 0
   end
+    (Lazy.force coverage)
 
 
 
 (** Helpers for serializing the coverage data in {!coverage}. *)
 
+let flatten_coverage coverage =
+  Hashtbl.fold (fun _ file acc -> file::acc) coverage []
+
 let runtime_data_to_string () =
-  match flatten_data () with
+  match flatten_coverage (Lazy.force coverage) with
   | [] ->
     None
   | data ->
-    let buffer = Buffer.create 4096 in
-    write_coverage (Format.formatter_of_buffer buffer) data;
-    Some (Buffer.contents buffer)
+    Some (write_coverage data)
 
-let write_runtime_coverage coverage channel =
-  write_coverage (Format.formatter_of_out_channel channel) (flatten_coverage coverage)
-
-let write_runtime_data channel =
-  write_coverage (Format.formatter_of_out_channel channel) (flatten_data ())
+let write_coverage coverage =
+  write_coverage (flatten_coverage coverage)
 
 let prng =
   Random.State.make_self_init () [@coverage off]
 
 let random_filename ~prefix =
-  Printf.sprintf "%s%09d.coverage"
-    prefix (abs (Random.State.int prng 1000000000))
+  prefix ^
+  (string_of_int (abs (Random.State.int prng 1000000000))) ^
+  ".coverage"
